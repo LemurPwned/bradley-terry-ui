@@ -1,4 +1,6 @@
+from collections import Counter
 import streamlit as st
+import numpy as np
 import json
 
 
@@ -14,6 +16,8 @@ if not st.session_state.get("counter"):
 def read_jsonl(file: str):
     with open(file, "r") as f:
         for line in f:
+            if not len(line):
+                return
             yield json.loads(line)
 
 
@@ -36,8 +40,45 @@ def record_ans(ans: str):
 
 
 def handle_any_ans():
-    current_prompt = next(st.session_state["prompt_generator"])
-    set_next_prompt(current_prompt)
+    try:
+        current_prompt = next(st.session_state["prompt_generator"])
+        set_next_prompt(current_prompt)
+        return True
+    except StopIteration:
+        st.toast("No more prompts!", icon="🚨")
+        st.write("No more prompts!")
+        return False
+
+
+def compute_bt_ranking(responses: list):
+    if not len(responses):
+        return {"ranking_plain": [], "ranking_bt": []}
+    # simple Bradley Terry ranking
+    ranking = Counter()
+    for resp in responses:
+        if resp["answer"] == "A":
+            ranking[resp["responseA"]] += 1
+        if resp["answer"] == "B":
+            ranking[resp["responseB"]] += 1
+        if resp["answer"] == "draw":
+            ranking[resp["responseA"]] += 0.5
+            ranking[resp["responseB"]] += 0.5
+
+    for k, v in ranking.items():
+        ranking[k] = v / len(responses)
+    response_matrix = np.zeros((len(ranking), len(ranking)))
+    rlen = len(ranking)
+    ranking_items = list(ranking.items())
+    for i in range(rlen):
+        ritem_i = ranking_items[i]
+        for j in range(i + 1, rlen):
+            ritem_j = ranking_items[j]
+            response_matrix[i, j] = ritem_i[1] / (ritem_i[1] + ritem_j[1])
+            response_matrix[j, i] = ritem_j[1] / (ritem_i[1] + ritem_j[1])
+
+    ranking_from_matrix = np.argsort(response_matrix, axis=1)
+    rr = [ranking_items[i][0] for i in ranking_from_matrix[:, -1]]
+    return {"ranking_plain": ranking.most_common(), "ranking_bt": rr}
 
 
 with st.sidebar:
@@ -53,8 +94,14 @@ with st.sidebar:
 
     # download responses
     st.download_button(
-        label="Download responses",
-        data=json.dumps({"responses": st.session_state["memory_responses"]}, indent=4),
+        label="Download responses and ranking",
+        data=json.dumps(
+            {
+                "responses": st.session_state["memory_responses"],
+                **compute_bt_ranking(st.session_state["memory_responses"]),
+            },
+            indent=4,
+        ),
         file_name="responses.json",
         mime="application/json",
     )
@@ -94,19 +141,23 @@ with c2:
 
 
 if a_better:
-    handle_any_ans()
-    record_ans("A")
+    record = handle_any_ans()
+    if record_ans:
+        record_ans("A")
 
 if b_better:
-    handle_any_ans()
-    record_ans("B")
+    record = handle_any_ans()
+    if record:
+        record_ans("B")
 
 if draw:
-    handle_any_ans()
-    st.session_state["draws"] += 1
-    record_ans("draw")
+    record = handle_any_ans()
+    if record:
+        st.session_state["draws"] += 1
+        record_ans("draw")
 
 if none:
-    handle_any_ans()
-    st.session_state["none"] += 1
-    record_ans("none")
+    record = handle_any_ans()
+    if record:
+        st.session_state["none"] += 1
+        record_ans("none")
